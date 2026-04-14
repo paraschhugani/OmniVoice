@@ -423,6 +423,8 @@ def main():
     if args.compile:
         logging.info("Compiling LLM backbone with torch.compile (reduce-overhead) ...")
         model.llm = torch.compile(model.llm, mode="reduce-overhead")
+        logging.info("Compiling audio tokenizer (codec) ...")
+        model.audio_tokenizer = torch.compile(model.audio_tokenizer, mode="reduce-overhead")
         logging.info("Compilation done (first request will trigger tracing).")
 
     # Pre-compute voice clone prompts so inference is fast per request
