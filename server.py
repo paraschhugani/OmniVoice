@@ -431,16 +431,6 @@ def main():
         max_workers=1, thread_name_prefix="omnivoice-infer"
     )
 
-    if args.int8:
-        logging.info("Applying INT8 weight-only quantization to LLM (torchao) ...")
-        try:
-            from torchao.quantization.quant_api import Int8WeightOnlyConfig, quantize_
-            quantize_(model.llm, Int8WeightOnlyConfig())
-            logging.info("INT8 quantization applied.")
-        except ImportError:
-            logging.error("torchao not installed. Run: pip install torchao")
-            raise
-
     if args.compile:
         logging.info("Compiling LLM backbone with torch.compile (reduce-overhead) ...")
         model.llm = torch.compile(model.llm, mode="reduce-overhead")
