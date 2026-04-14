@@ -406,7 +406,7 @@ def main():
 
     if args.compile:
         logging.info("Compiling LLM backbone with torch.compile ...")
-        model.llm = torch.compile(model.llm, mode="reduce-overhead")
+        model.llm = torch.compile(model.llm, mode="default")
         logging.info("Compilation done (first request will trigger tracing).")
 
     # Pre-compute voice clone prompts so inference is fast per request
