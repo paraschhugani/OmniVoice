@@ -543,6 +543,9 @@ class OmniVoice(PreTrainedModel):
 
         self.eval()
 
+        import time as _time
+        _t0 = _time.perf_counter()
+
         full_task = self._preprocess_all(
             text=text,
             language=language,
@@ -554,6 +557,7 @@ class OmniVoice(PreTrainedModel):
             speed=speed,
             duration=duration,
         )
+        _t_preprocess = _time.perf_counter()
 
         short_idx, long_idx = full_task.get_indices(
             gen_config, self.audio_tokenizer.config.frame_rate
@@ -573,6 +577,8 @@ class OmniVoice(PreTrainedModel):
             for idx, res in zip(long_idx, long_results):
                 results[idx] = res
 
+        _t_iterative = _time.perf_counter()
+
         generated_audios = []
         for i in range(full_task.batch_size):
             assert results[i] is not None, f"Result {i} was not generated"
@@ -581,6 +587,18 @@ class OmniVoice(PreTrainedModel):
                     results[i], full_task.ref_rms[i], gen_config  # type: ignore[arg-type]
                 )
             )
+
+        _t_decode = _time.perf_counter()
+        logger.info(
+            "PROFILE preprocess=%.3fs  diffusion=%.3fs  decode=%.3fs  total=%.3fs  "
+            "num_step=%d  target_tokens=%s",
+            _t_preprocess - _t0,
+            _t_iterative - _t_preprocess,
+            _t_decode - _t_iterative,
+            _t_decode - _t0,
+            gen_config.num_step,
+            full_task.target_lens,
+        )
 
         return generated_audios
 
