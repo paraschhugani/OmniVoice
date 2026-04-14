@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import io
 import logging
 import os
@@ -55,6 +56,15 @@ voice_prompts: dict = {}   # name -> VoiceClonePrompt (pre-computed)
 # Lower = faster TTFB (16 ≈ half latency, 8 ≈ quarter latency vs 32).
 # Override at startup via --num-step or OMNIVOICE_NUM_STEP env var.
 _default_num_step: int = int(os.environ.get("OMNIVOICE_NUM_STEP", 16))
+# Single-threaded executor — all model.generate() calls are routed through this
+# so that torch.compile(mode="reduce-overhead") CUDA graph TLS state is always
+# accessed from the same thread. Created in main() before warmup.
+_inference_executor: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _infer(**kwargs) -> list:
+    """Submit model.generate() to the inference thread and block until done."""
+    return _inference_executor.submit(model.generate, **kwargs).result()
 
 # ---------------------------------------------------------------------------
 # Gunicorn entry point — load model once when worker starts
@@ -187,7 +197,7 @@ def _iter_stream_pcm(
 
     for chunk in chunks:
         try:
-            audios = model.generate(
+            audios = _infer(
                 text=chunk,
                 language=language,
                 voice_clone_prompt=voice_prompt,
@@ -270,7 +280,7 @@ def synthesize():
     # --- Non-streaming path (original behaviour) ---
     try:
         t0 = time.perf_counter()
-        audios = model.generate(
+        audios = _infer(
             text=text,
             language=language,
             voice_clone_prompt=voice_prompts[voice_name],
@@ -403,9 +413,16 @@ def main():
     model = OmniVoice.from_pretrained(args.model, **load_kwargs)
     logging.info("Model loaded.")
 
+    # Create the single-threaded inference executor before warmup so that
+    # CUDA graph TLS state is captured on the same thread used for all requests.
+    global _inference_executor
+    _inference_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="omnivoice-infer"
+    )
+
     if args.compile:
-        logging.info("Compiling LLM backbone with torch.compile ...")
-        model.llm = torch.compile(model.llm, mode="default")
+        logging.info("Compiling LLM backbone with torch.compile (reduce-overhead) ...")
+        model.llm = torch.compile(model.llm, mode="reduce-overhead")
         logging.info("Compilation done (first request will trigger tracing).")
 
     # Pre-compute voice clone prompts so inference is fast per request
@@ -426,11 +443,7 @@ def main():
         logging.info("Warming up model (dummy inference) ...")
         first_prompt = next(iter(voice_prompts.values()))
         try:
-            model.generate(
-                text="Hello.",
-                voice_clone_prompt=first_prompt,
-                num_step=16,
-            )
+            _infer(text="Hello.", voice_clone_prompt=first_prompt, num_step=16)
             logging.info("Warmup done.")
         except Exception as e:
             logging.warning(f"Warmup failed (non-fatal): {e}")
