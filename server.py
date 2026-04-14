@@ -45,6 +45,46 @@ VOICE_FILES = {
 model: OmniVoice = None
 voice_prompts: dict = {}   # name -> VoiceClonePrompt (pre-computed)
 
+# ---------------------------------------------------------------------------
+# Gunicorn entry point — load model once when worker starts
+# Called automatically by Gunicorn via --preload or post_fork hook.
+# ---------------------------------------------------------------------------
+def _load_model_for_gunicorn():
+    """Load model into globals. Called at module import when using Gunicorn."""
+    import os as _os
+    checkpoint = _os.environ.get("OMNIVOICE_MODEL", "k2-fsa/OmniVoice")
+    device = _os.environ.get("OMNIVOICE_DEVICE") or get_best_device()
+    load_asr = _os.environ.get("OMNIVOICE_LOAD_ASR", "0") == "1"
+
+    global model
+    if model is not None:
+        return  # already loaded
+
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    model = OmniVoice.from_pretrained(
+        checkpoint, device_map=device, dtype=torch.float16, load_asr=load_asr
+    )
+    for name, path in VOICE_FILES.items():
+        if not _os.path.exists(path):
+            continue
+        voice_prompts[name] = model.create_voice_clone_prompt(ref_audio=path)
+
+    if voice_prompts:
+        first_prompt = next(iter(voice_prompts.values()))
+        try:
+            model.generate(text="Hello.", voice_clone_prompt=first_prompt, num_step=16)
+        except Exception:
+            pass
+
+
+# Auto-load when imported by Gunicorn (GUNICORN_CMD_ARGS is set by gunicorn)
+if "GUNICORN_CMD_ARGS" in __import__("os").environ or \
+        __import__("os").environ.get("OMNIVOICE_AUTOLOAD") == "1":
+    _load_model_for_gunicorn()
+
 
 def get_best_device():
     if torch.cuda.is_available():
@@ -81,6 +121,10 @@ def synthesize():
     speed = float(data.get("speed", 1.0))
     # Lower = faster, higher = better quality. 8–16 is a good speed/quality tradeoff.
     num_step = int(data.get("num_step", 16))
+    # Set False to skip silence removal — saves ~10-20ms per request.
+    postprocess_output = bool(data.get("postprocess_output", True))
+    # Set False to skip denoising token — slight speedup.
+    denoise = bool(data.get("denoise", True))
 
     try:
         t0 = time.perf_counter()
@@ -90,6 +134,8 @@ def synthesize():
             voice_clone_prompt=voice_prompts[voice_name],
             speed=speed if speed != 1.0 else None,
             num_step=num_step,
+            postprocess_output=postprocess_output,
+            denoise=denoise,
         )
         elapsed = time.perf_counter() - t0
     except Exception as e:
@@ -180,14 +226,23 @@ def main():
     device = args.device or get_best_device()
 
     global model
-    logging.info(f"Loading OmniVoice from '{args.model}' on {device} ...")
-    model = OmniVoice.from_pretrained(
-        args.model,
+    load_kwargs = dict(
         device_map=device,
         dtype=torch.float16,
         load_asr=not args.no_asr,
     )
+    if args.flash_attn:
+        load_kwargs["attn_implementation"] = "flash_attention_2"
+        logging.info("Flash Attention 2 enabled.")
+
+    logging.info(f"Loading OmniVoice from '{args.model}' on {device} ...")
+    model = OmniVoice.from_pretrained(args.model, **load_kwargs)
     logging.info("Model loaded.")
+
+    if args.compile:
+        logging.info("Compiling LLM backbone with torch.compile ...")
+        model.llm = torch.compile(model.llm, mode="reduce-overhead")
+        logging.info("Compilation done (first request will trigger tracing).")
 
     # Pre-compute voice clone prompts so inference is fast per request
     for name, path in VOICE_FILES.items():
@@ -200,6 +255,27 @@ def main():
 
     if not voice_prompts:
         logging.error("No voice prompts loaded — check that .mp3 files exist.")
+
+    # Warmup: run a dummy inference to pre-compile CUDA kernels.
+    # Without this, the first real request is 2–3x slower.
+    if voice_prompts:
+        logging.info("Warming up model (dummy inference) ...")
+        first_prompt = next(iter(voice_prompts.values()))
+        try:
+            model.generate(
+                text="Hello.",
+                voice_clone_prompt=first_prompt,
+                num_step=16,
+            )
+            logging.info("Warmup done.")
+        except Exception as e:
+            logging.warning(f"Warmup failed (non-fatal): {e}")
+
+    # Enable TF32 on Ampere+ NVIDIA GPUs — free ~10-20% speedup, no quality loss.
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        logging.info("TF32 enabled.")
 
     logging.info(f"Starting server on {args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=False)
