@@ -101,6 +101,7 @@ app = Flask(__name__)
 
 
 @app.route("/synthesize", methods=["POST"])
+@app.route("/audio/speech", methods=["POST"])
 def synthesize():
     data = request.get_json(silent=True)
     if not data:
