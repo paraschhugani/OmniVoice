@@ -364,6 +364,17 @@ def build_parser():
         help="Use Flash Attention 2 (requires flash-attn package, CUDA only).",
     )
     parser.add_argument(
+        "--int8",
+        action="store_true",
+        default=False,
+        help=(
+            "INT8 weight-only quantization of the LLM via torchao. "
+            "Reduces memory bandwidth per forward pass — typically 1.3-1.5x "
+            "faster diffusion with minimal quality impact. "
+            "Requires: pip install torchao"
+        ),
+    )
+    parser.add_argument(
         "--num-step",
         type=int,
         default=None,
@@ -419,6 +430,16 @@ def main():
     _inference_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="omnivoice-infer"
     )
+
+    if args.int8:
+        logging.info("Applying INT8 weight-only quantization to LLM (torchao) ...")
+        try:
+            from torchao.quantization import int8_weight_only, quantize_
+            quantize_(model.llm, int8_weight_only())
+            logging.info("INT8 quantization applied.")
+        except ImportError:
+            logging.error("torchao not installed. Run: pip install torchao")
+            raise
 
     if args.compile:
         logging.info("Compiling LLM backbone with torch.compile (reduce-overhead) ...")
