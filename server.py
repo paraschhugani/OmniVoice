@@ -434,8 +434,8 @@ def main():
     if args.int8:
         logging.info("Applying INT8 weight-only quantization to LLM (torchao) ...")
         try:
-            from torchao.quantization.quant_api import int8_weight_only, quantize_
-            quantize_(model.llm, int8_weight_only())
+            from torchao.quantization.quant_api import Int8WeightOnlyConfig, quantize_
+            quantize_(model.llm, Int8WeightOnlyConfig())
             logging.info("INT8 quantization applied.")
         except ImportError:
             logging.error("torchao not installed. Run: pip install torchao")
