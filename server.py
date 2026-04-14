@@ -8,9 +8,14 @@ POST /synthesize
             "voice":    "rahul" | "monika",   (required)
             "text":     "Hello world",        (required)
             "language": "English",            (optional, default auto-detect)
-            "speed":    1.0                   (optional)
+            "speed":    1.0,                  (optional)
+            "stream":   false                 (optional) if true, returns raw 16-bit
+                                              signed PCM chunks sentence-by-sentence
+                                              (audio/pcm). TTFB = first-sentence latency.
+                                              Headers: X-Sample-Rate, X-Audio-Channels,
+                                              X-Audio-Bit-Depth describe the format.
         }
-    Response: WAV audio (audio/wav)
+    Response: WAV audio (audio/wav) or streaming audio/pcm when stream=true
 
 Usage:
     python server.py --model k2-fsa/OmniVoice --port 5000
@@ -26,9 +31,10 @@ import time
 import numpy as np
 import soundfile as sf
 import torch
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 
 from omnivoice import OmniVoice
+from omnivoice.utils.text import chunk_text_punctuation
 
 # ---------------------------------------------------------------------------
 # Reference voices — add more entries here as needed
@@ -145,6 +151,56 @@ def _encode_audio(waveform: np.ndarray, sampling_rate: int, fmt: str) -> tuple:
 
 
 # ---------------------------------------------------------------------------
+# Streaming helpers
+# ---------------------------------------------------------------------------
+
+# Target ~2-3 s of audio per chunk; tune up for better quality, down for lower latency.
+_STREAM_CHUNK_CHARS = 120
+
+
+def _iter_stream_pcm(
+    text: str,
+    voice_name: str,
+    language,
+    speed: float,
+    num_step: int,
+    postprocess_output: bool,
+    denoise: bool,
+):
+    """Yield raw signed-16-bit PCM bytes for each sentence chunk.
+
+    Splits *text* at sentence boundaries, generates audio for each chunk
+    independently, and yields bytes immediately — so the caller (client)
+    receives the first chunk without waiting for the full audio to be ready.
+
+    PCM format: 16-bit signed little-endian, mono, model.sampling_rate Hz.
+    """
+    chunks = chunk_text_punctuation(text, chunk_len=_STREAM_CHUNK_CHARS, min_chunk_len=10)
+    if not chunks:
+        chunks = [text]
+
+    voice_prompt = voice_prompts[voice_name]
+
+    for chunk in chunks:
+        try:
+            audios = model.generate(
+                text=chunk,
+                language=language,
+                voice_clone_prompt=voice_prompt,
+                speed=speed if speed != 1.0 else None,
+                num_step=num_step,
+                postprocess_output=postprocess_output,
+                denoise=denoise,
+            )
+            waveform = audios[0]  # float32 (T,)
+            pcm = (np.clip(waveform, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+            yield pcm
+        except Exception:
+            logging.exception("Streaming chunk generation failed — stopping stream")
+            return
+
+
+# ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
@@ -177,7 +233,38 @@ def synthesize():
     denoise = bool(data.get("denoise", True))
     # OpenAI TTS response_format: mp3 | opus | aac | flac | wav | pcm
     response_format = data.get("response_format", "mp3").lower()
+    stream = bool(data.get("stream", True))
 
+    # --- Streaming path ---
+    # Returns raw 16-bit signed PCM chunks as they are generated sentence by
+    # sentence. TTFB drops from full-generation time to first-sentence time.
+    if stream:
+        logging.info(
+            f"[stream] voice={voice_name} | text_len={len(text)} | num_step={num_step}"
+        )
+        gen = stream_with_context(
+            _iter_stream_pcm(
+                text=text,
+                voice_name=voice_name,
+                language=language,
+                speed=speed,
+                num_step=num_step,
+                postprocess_output=postprocess_output,
+                denoise=denoise,
+            )
+        )
+        return Response(
+            gen,
+            mimetype="audio/pcm",
+            headers={
+                "X-Sample-Rate": str(model.sampling_rate),
+                "X-Audio-Channels": "1",
+                "X-Audio-Bit-Depth": "16",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+
+    # --- Non-streaming path (original behaviour) ---
     try:
         t0 = time.perf_counter()
         audios = model.generate(
