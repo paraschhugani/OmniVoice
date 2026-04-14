@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import logging
+import time
 from typing import Any, Dict
 
 import gradio as gr
@@ -209,12 +210,17 @@ def build_demo(
             kw["instruct"] = instruct.strip()
 
         try:
+            t0 = time.perf_counter()
             audio = model.generate(**kw)
+            elapsed = time.perf_counter() - t0
         except Exception as e:
             return None, f"Error: {type(e).__name__}: {e}"
 
         waveform = (audio[0] * 32767).astype(np.int16)
-        return (sampling_rate, waveform), "Done."
+        audio_duration = len(audio[0]) / sampling_rate
+        rtf = elapsed / audio_duration if audio_duration > 0 else float("inf")
+        status = f"Done. | RTF: {rtf:.3f} ({elapsed:.2f}s gen / {audio_duration:.2f}s audio)"
+        return (sampling_rate, waveform), status
 
     # Allow external wrappers (e.g. spaces.GPU for ZeroGPU Spaces)
     _gen = generate_fn if generate_fn is not None else _gen_core
