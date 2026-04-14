@@ -264,7 +264,6 @@ def synthesize():
                 "X-Sample-Rate": str(model.sampling_rate),
                 "X-Audio-Channels": "1",
                 "X-Audio-Bit-Depth": "16",
-                "Transfer-Encoding": "chunked",
             },
         )
 
