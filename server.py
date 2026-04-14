@@ -237,7 +237,7 @@ def synthesize():
     denoise = bool(data.get("denoise", True))
     # OpenAI TTS response_format: mp3 | opus | aac | flac | wav | pcm
     response_format = data.get("response_format", "mp3").lower()
-    stream = bool(data.get("stream", False))
+    stream = bool(data.get("stream", True))
 
     # --- Streaming path ---
     # Returns raw 16-bit signed PCM chunks as they are generated sentence by
