@@ -51,6 +51,10 @@ VOICE_FILES = {
 # ---------------------------------------------------------------------------
 model: OmniVoice = None
 voice_prompts: dict = {}   # name -> VoiceClonePrompt (pre-computed)
+# Server-side default for num_step. Clients can override via the request body.
+# Lower = faster TTFB (16 ≈ half latency, 8 ≈ quarter latency vs 32).
+# Override at startup via --num-step or OMNIVOICE_NUM_STEP env var.
+_default_num_step: int = int(os.environ.get("OMNIVOICE_NUM_STEP", 16))
 
 # ---------------------------------------------------------------------------
 # Gunicorn entry point — load model once when worker starts
@@ -228,7 +232,7 @@ def synthesize():
 
     language = data.get("language") or None
     speed = float(data.get("speed", 1.0))
-    num_step = int(data.get("num_step", 32))
+    num_step = int(data.get("num_step", _default_num_step))
     postprocess_output = bool(data.get("postprocess_output", True))
     denoise = bool(data.get("denoise", True))
     # OpenAI TTS response_format: mp3 | opus | aac | flac | wav | pcm
@@ -350,6 +354,18 @@ def build_parser():
         default=False,
         help="Use Flash Attention 2 (requires flash-attn package, CUDA only).",
     )
+    parser.add_argument(
+        "--num-step",
+        type=int,
+        default=None,
+        help=(
+            "Default number of iterative decoding steps for requests that do not "
+            "set num_step explicitly (e.g. the LiveKit / OpenAI TTS plugin). "
+            "Lower = faster TTFB. Typical sweet-spots: 32 (best quality), "
+            "16 (half latency, still good), 8 (quarter latency, acceptable). "
+            "Defaults to OMNIVOICE_NUM_STEP env var or 16."
+        ),
+    )
     return parser
 
 
@@ -359,6 +375,18 @@ def main():
         format="%(asctime)s %(levelname)s: %(message)s",
     )
     args = build_parser().parse_args()
+
+    global _default_num_step
+    if args.num_step is not None:
+        _default_num_step = args.num_step
+    logging.info(f"Default num_step: {_default_num_step}")
+
+    if not args.compile:
+        logging.warning(
+            "torch.compile is NOT enabled. Add --compile for a free ~30-40%% "
+            "latency reduction (first request triggers tracing, subsequent ones "
+            "are faster). Strongly recommended for production / low-latency use."
+        )
 
     device = args.device or get_best_device()
 
