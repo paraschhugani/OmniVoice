@@ -20,6 +20,7 @@ import argparse
 import io
 import logging
 import os
+import subprocess
 import time
 
 import numpy as np
@@ -95,6 +96,55 @@ def get_best_device():
 
 
 # ---------------------------------------------------------------------------
+# Audio encoding helper
+# ---------------------------------------------------------------------------
+_FORMAT_MIME = {
+    "mp3":  "audio/mpeg",
+    "opus": "audio/ogg; codecs=opus",
+    "aac":  "audio/aac",
+    "flac": "audio/flac",
+    "wav":  "audio/wav",
+    "pcm":  "audio/pcm",
+}
+
+def _encode_audio(waveform: np.ndarray, sampling_rate: int, fmt: str) -> tuple:
+    """Encode waveform to the requested format. Returns (bytes, mimetype)."""
+    fmt = fmt.lower()
+
+    if fmt == "pcm":
+        pcm = (waveform * 32767).astype(np.int16).tobytes()
+        return pcm, "audio/pcm"
+
+    # Build WAV in memory — base for all other formats
+    wav_buf = io.BytesIO()
+    sf.write(wav_buf, waveform, sampling_rate, format="WAV", subtype="PCM_16")
+    wav_buf.seek(0)
+
+    if fmt == "wav":
+        return wav_buf.read(), "audio/wav"
+
+    # Use ffmpeg for mp3 / opus / aac / flac
+    ffmpeg_fmt = {"mp3": "mp3", "opus": "opus", "aac": "adts", "flac": "flac"}.get(fmt)
+    if ffmpeg_fmt:
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-f", "wav", "-i", "pipe:0",
+                 "-f", ffmpeg_fmt, "-loglevel", "error", "pipe:1"],
+                input=wav_buf.read(),
+                capture_output=True,
+                timeout=30,
+            )
+            if proc.returncode == 0:
+                return proc.stdout, _FORMAT_MIME.get(fmt, "audio/mpeg")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            logging.warning(f"ffmpeg not available or timed out — falling back to WAV")
+
+    # Fallback to WAV
+    wav_buf.seek(0)
+    return wav_buf.read(), "audio/wav"
+
+
+# ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
@@ -102,14 +152,16 @@ app = Flask(__name__)
 
 @app.route("/synthesize", methods=["POST"])
 @app.route("/audio/speech", methods=["POST"])
+@app.route("/v1/audio/speech", methods=["POST"])
 def synthesize():
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Request body must be JSON."}), 400
 
-    text = data.get("text", "").strip()
+    # OpenAI TTS uses "input"; our own API uses "text" — support both
+    text = (data.get("input") or data.get("text", "")).strip()
     if not text:
-        return jsonify({"error": "Field 'text' is required and must not be empty."}), 400
+        return jsonify({"error": "Field 'input' (or 'text') is required and must not be empty."}), 400
 
     voice_name = data.get("voice", "").strip().lower()
     if not voice_name:
@@ -120,12 +172,11 @@ def synthesize():
 
     language = data.get("language") or None
     speed = float(data.get("speed", 1.0))
-    # Lower = faster, higher = better quality. 8–16 is a good speed/quality tradeoff.
     num_step = int(data.get("num_step", 16))
-    # Set False to skip silence removal — saves ~10-20ms per request.
     postprocess_output = bool(data.get("postprocess_output", True))
-    # Set False to skip denoising token — slight speedup.
     denoise = bool(data.get("denoise", True))
+    # OpenAI TTS response_format: mp3 | opus | aac | flac | wav | pcm
+    response_format = data.get("response_format", "mp3").lower()
 
     try:
         t0 = time.perf_counter()
@@ -147,20 +198,18 @@ def synthesize():
     audio_duration = len(waveform) / model.sampling_rate
     rtf = elapsed / audio_duration if audio_duration > 0 else float("inf")
     logging.info(
-        f"voice={voice_name} | text_len={len(text)} | "
+        f"voice={voice_name} | fmt={response_format} | text_len={len(text)} | "
         f"gen={elapsed:.2f}s | audio={audio_duration:.2f}s | RTF={rtf:.3f}"
     )
 
-    # Encode as WAV in memory and stream back
-    buf = io.BytesIO()
-    sf.write(buf, waveform, model.sampling_rate, format="WAV", subtype="PCM_16")
-    buf.seek(0)
+    audio_bytes, mimetype = _encode_audio(waveform, model.sampling_rate, response_format)
+    buf = io.BytesIO(audio_bytes)
 
     response = send_file(
         buf,
-        mimetype="audio/wav",
+        mimetype=mimetype,
         as_attachment=False,
-        download_name="output.wav",
+        download_name=f"output.{response_format}",
     )
     response.headers["X-RTF"] = f"{rtf:.4f}"
     response.headers["X-Generation-Time"] = f"{elapsed:.3f}s"
