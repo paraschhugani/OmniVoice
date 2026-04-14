@@ -79,6 +79,8 @@ def synthesize():
 
     language = data.get("language") or None
     speed = float(data.get("speed", 1.0))
+    # Lower = faster, higher = better quality. 8–16 is a good speed/quality tradeoff.
+    num_step = int(data.get("num_step", 16))
 
     try:
         t0 = time.perf_counter()
@@ -87,6 +89,7 @@ def synthesize():
             language=language,
             voice_clone_prompt=voice_prompts[voice_name],
             speed=speed if speed != 1.0 else None,
+            num_step=num_step,
         )
         elapsed = time.perf_counter() - t0
     except Exception as e:
@@ -150,6 +153,19 @@ def build_parser():
         action="store_true",
         default=False,
         help="Skip loading Whisper ASR. Reference text won't be auto-transcribed.",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        default=False,
+        help="torch.compile the LLM backbone. First request is slow (compilation), "
+        "subsequent requests are faster.",
+    )
+    parser.add_argument(
+        "--flash-attn",
+        action="store_true",
+        default=False,
+        help="Use Flash Attention 2 (requires flash-attn package, CUDA only).",
     )
     return parser
 
