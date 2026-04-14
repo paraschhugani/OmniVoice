@@ -172,7 +172,7 @@ def synthesize():
 
     language = data.get("language") or None
     speed = float(data.get("speed", 1.0))
-    num_step = int(data.get("num_step", 16))
+    num_step = int(data.get("num_step", 32))
     postprocess_output = bool(data.get("postprocess_output", True))
     denoise = bool(data.get("denoise", True))
     # OpenAI TTS response_format: mp3 | opus | aac | flac | wav | pcm
