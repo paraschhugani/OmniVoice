@@ -5,7 +5,7 @@ Flask TTS server for OmniVoice.
 POST /synthesize
     Body (JSON):
         {
-            "voice":    "rahul" | "monika",   (required)
+            "voice":    "rahul" | "monika" | "sidharth",   (required)
             "text":     "Hello world",        (required)
             "language": "English",            (optional, default auto-detect)
             "speed":    1.0,                  (optional)
@@ -45,6 +45,7 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VOICE_FILES = {
     "rahul": os.path.join(_BASE_DIR, "rahul.mp3"),
     "monika": os.path.join(_BASE_DIR, "monika.mp3"),
+    "sidharth": os.path.join(_BASE_DIR, "sidharth.mp3"),
 }
 
 # ---------------------------------------------------------------------------
@@ -235,7 +236,7 @@ def synthesize():
 
     voice_name = data.get("voice", "").strip().lower()
     if not voice_name:
-        return jsonify({"error": "Field 'voice' is required (rahul | monika)."}), 400
+        return jsonify({"error": "Field 'voice' is required (rahul | monika | sidharth)."}), 400
     if voice_name not in voice_prompts:
         available = list(voice_prompts.keys())
         return jsonify({"error": f"Unknown voice '{voice_name}'. Available: {available}"}), 400
