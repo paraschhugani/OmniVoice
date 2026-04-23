@@ -75,7 +75,12 @@ def _load_model_for_gunicorn():
     """Load model into globals. Called at module import when using Gunicorn."""
     import os as _os
     checkpoint = _os.environ.get("OMNIVOICE_MODEL", "k2-fsa/OmniVoice")
-    device = _os.environ.get("OMNIVOICE_DEVICE") or get_best_device()
+    _default_device = (
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()
+        else "cpu"
+    )
+    device = _os.environ.get("OMNIVOICE_DEVICE") or _default_device
     load_asr = _os.environ.get("OMNIVOICE_LOAD_ASR", "0") == "1"
     do_compile = _os.environ.get("OMNIVOICE_COMPILE", "0") == "1"
     do_int8 = _os.environ.get("OMNIVOICE_INT8", "0") == "1"
