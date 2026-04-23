@@ -77,6 +77,8 @@ def _load_model_for_gunicorn():
     checkpoint = _os.environ.get("OMNIVOICE_MODEL", "k2-fsa/OmniVoice")
     device = _os.environ.get("OMNIVOICE_DEVICE") or get_best_device()
     load_asr = _os.environ.get("OMNIVOICE_LOAD_ASR", "0") == "1"
+    do_compile = _os.environ.get("OMNIVOICE_COMPILE", "0") == "1"
+    do_int8 = _os.environ.get("OMNIVOICE_INT8", "0") == "1"
 
     global model
     if model is not None:
@@ -86,9 +88,36 @@ def _load_model_for_gunicorn():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    model = OmniVoice.from_pretrained(
-        checkpoint, device_map=device, dtype=torch.float16, load_asr=load_asr
-    )
+    load_kwargs = dict(device_map=device, dtype=torch.float16, load_asr=load_asr)
+    if do_int8:
+        try:
+            from torchao.quantization import int8_weight_only, quantize_
+            load_kwargs["_int8"] = True  # marker; applied after load below
+        except ImportError:
+            logging.warning("torchao not installed — skipping INT8 quantization.")
+            do_int8 = False
+
+    model = OmniVoice.from_pretrained(checkpoint, **{k: v for k, v in load_kwargs.items() if k != "_int8"})
+
+    if do_int8:
+        from torchao.quantization import int8_weight_only, quantize_
+        quantize_(model.llm, int8_weight_only())
+        logging.info("INT8 weight-only quantization applied.")
+
+    if do_compile:
+        logging.info("Compiling LLM backbone with torch.compile ...")
+        try:
+            model.llm = torch.compile(model.llm, mode="default", dynamic=True)
+            logging.info("Compilation done.")
+        except Exception as e:
+            logging.warning(f"torch.compile failed ({e}), falling back to eager mode.")
+
+    global _inference_executor
+    if _inference_executor is None:
+        _inference_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="omnivoice-infer"
+        )
+
     for name, path in VOICE_FILES.items():
         if not _os.path.exists(path):
             continue
@@ -97,9 +126,13 @@ def _load_model_for_gunicorn():
     if voice_prompts:
         first_prompt = next(iter(voice_prompts.values()))
         try:
-            model.generate(text="Hello.", voice_clone_prompt=first_prompt, num_step=16)
-        except Exception:
-            pass
+            _infer(text="Hello.", voice_clone_prompt=first_prompt, num_step=16)
+            logging.info("Warmup done.")
+        except Exception as e:
+            logging.warning(f"Warmup failed (non-fatal): {e}")
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
 
 
 # Auto-load when imported by Gunicorn (GUNICORN_CMD_ARGS is set by gunicorn)
