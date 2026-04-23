@@ -185,6 +185,7 @@ class OmniVoiceConfig(PretrainedConfig):
 class OmniVoice(PreTrainedModel):
     _supports_flex_attn = True
     _supports_flash_attn_2 = True
+    _supports_sdpa = True
     config_class = OmniVoiceConfig
 
     def __init__(self, config: OmniVoiceConfig, llm: Optional[PreTrainedModel] = None):
@@ -195,8 +196,13 @@ class OmniVoice(PreTrainedModel):
             # (skipping config-based init).
             self.llm = llm
         else:
-            # Otherwise, initialize the LLM from the config.
-            self.llm = AutoModel.from_config(self.config.llm_config)
+            # Propagate attn_implementation to the inner LLM.
+            # Flash Attention requires a 2D padding mask but OmniVoice passes a
+            # 4D causal mask, so we fall back to sdpa unless flash_attention_2
+            # is explicitly requested.
+            outer_attn = getattr(config, "_attn_implementation", None)
+            llm_attn = outer_attn if outer_attn == "flash_attention_2" else "sdpa"
+            self.llm = AutoModel.from_config(self.config.llm_config, attn_implementation=llm_attn)
 
         self.audio_embeddings = nn.Embedding(
             config.num_audio_codebook * config.audio_vocab_size,

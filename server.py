@@ -87,8 +87,7 @@ def _load_model_for_gunicorn():
         torch.backends.cudnn.allow_tf32 = True
 
     model = OmniVoice.from_pretrained(
-        checkpoint, device_map=device, dtype=torch.float16, load_asr=load_asr,
-        attn_implementation="sdpa",
+        checkpoint, device_map=device, dtype=torch.float16, load_asr=load_asr
     )
     for name, path in VOICE_FILES.items():
         if not _os.path.exists(path):
@@ -413,9 +412,6 @@ def main():
         device_map=device,
         dtype=torch.float16,
         load_asr=not args.no_asr,
-        # OmniVoice passes a 4D boolean attention mask which Flash Attention
-        # cannot handle (it expects a 2D mask). Force SDPA which supports it.
-        attn_implementation="sdpa",
     )
     if args.flash_attn:
         load_kwargs["attn_implementation"] = "flash_attention_2"
