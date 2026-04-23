@@ -403,11 +403,7 @@ def main():
     logging.info(f"Default num_step: {_default_num_step}")
 
     if not args.compile:
-        logging.warning(
-            "torch.compile is NOT enabled. Add --compile for a free ~30-40%% "
-            "latency reduction (first request triggers tracing, subsequent ones "
-            "are faster). Strongly recommended for production / low-latency use."
-        )
+        logging.info("torch.compile not enabled — running in eager mode.")
 
     device = args.device or get_best_device()
 
@@ -433,9 +429,12 @@ def main():
     )
 
     if args.compile:
-        logging.info("Compiling LLM backbone with torch.compile (default) ...")
-        model.llm = torch.compile(model.llm, mode="default")
-        logging.info("Compilation done (first request will trigger tracing).")
+        logging.info("Compiling LLM backbone with torch.compile (default, dynamic shapes) ...")
+        try:
+            model.llm = torch.compile(model.llm, mode="default", dynamic=True)
+            logging.info("Compilation done (first request will trigger tracing).")
+        except Exception as e:
+            logging.warning(f"torch.compile failed ({e}), falling back to eager mode.")
 
     # Pre-compute voice clone prompts so inference is fast per request
     for name, path in VOICE_FILES.items():
@@ -459,6 +458,11 @@ def main():
             logging.info("Warmup done.")
         except Exception as e:
             logging.warning(f"Warmup failed (non-fatal): {e}")
+            # A CUDA assert during warmup poisons the device context — reset it so
+            # subsequent real requests are not affected.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
 
     # Enable TF32 on Ampere+ NVIDIA GPUs — free ~10-20% speedup, no quality loss.
     if torch.cuda.is_available():
