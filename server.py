@@ -126,7 +126,15 @@ def _load_model_for_gunicorn():
     for name, path in VOICE_FILES.items():
         if not _os.path.exists(path):
             continue
-        voice_prompts[name] = model.create_voice_clone_prompt(ref_audio=path)
+        cache_path = path + ".prompt.pt"
+        if _os.path.exists(cache_path):
+            logging.info(f"Loading cached voice prompt for '{name}' ...")
+            voice_prompts[name] = torch.load(cache_path, weights_only=False)
+        else:
+            logging.info(f"Building voice prompt for '{name}' (runs ASR once, then cached) ...")
+            voice_prompts[name] = model.create_voice_clone_prompt(ref_audio=path)
+            torch.save(voice_prompts[name], cache_path)
+            logging.info(f"Cached to {cache_path}")
 
     if voice_prompts:
         first_prompt = next(iter(voice_prompts.values()))
@@ -479,8 +487,14 @@ def main():
         if not os.path.exists(path):
             logging.warning(f"Reference audio not found for '{name}': {path}")
             continue
-        logging.info(f"Building voice prompt for '{name}' from {path} ...")
-        voice_prompts[name] = model.create_voice_clone_prompt(ref_audio=path)
+        cache_path = path + ".prompt.pt"
+        if os.path.exists(cache_path):
+            logging.info(f"Loading cached voice prompt for '{name}' ...")
+            voice_prompts[name] = torch.load(cache_path, weights_only=False)
+        else:
+            logging.info(f"Building voice prompt for '{name}' from {path} ...")
+            voice_prompts[name] = model.create_voice_clone_prompt(ref_audio=path)
+            torch.save(voice_prompts[name], cache_path)
         logging.info(f"  '{name}' ready.")
 
     if not voice_prompts:
