@@ -216,7 +216,7 @@ def _encode_audio(waveform: np.ndarray, sampling_rate: int, fmt: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 # Target ~2-3 s of audio per chunk; tune up for better quality, down for lower latency.
-_STREAM_CHUNK_CHARS = 120
+_STREAM_CHUNK_CHARS = 30
 
 
 def _iter_stream_pcm(
