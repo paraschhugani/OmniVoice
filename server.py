@@ -460,8 +460,10 @@ def main():
         load_asr=not args.no_asr,
     )
     if args.flash_attn:
-        load_kwargs["attn_implementation"] = "flash_attention_2"
-        logging.info("Flash Attention 2 enabled.")
+        logging.warning(
+            "--flash-attn is incompatible with OmniVoice's custom 4D attention mask "
+            "and will cause a CUDA device-side assert. Ignoring --flash-attn."
+        )
 
     logging.info(f"Loading OmniVoice from '{args.model}' on {device} ...")
     model = OmniVoice.from_pretrained(args.model, **load_kwargs)
