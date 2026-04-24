@@ -53,10 +53,13 @@ VOICE_FILES = {
 # ---------------------------------------------------------------------------
 model: OmniVoice = None
 voice_prompts: dict = {}   # name -> VoiceClonePrompt (pre-computed)
-# Server-side default for num_step. Clients can override via the request body.
-# Lower = faster TTFB (16 ≈ half latency, 8 ≈ quarter latency vs 32).
-# Override at startup via --num-step or OMNIVOICE_NUM_STEP env var.
+# Server-side defaults. Clients can override via the request body.
 _default_num_step: int = int(os.environ.get("OMNIVOICE_NUM_STEP", 16))
+# class_temperature > 0 enables stochastic token sampling — sounds more natural.
+# 0.0 = greedy (flat/robotic), 0.1–0.3 = recommended range.
+_default_class_temperature: float = float(os.environ.get("OMNIVOICE_CLASS_TEMPERATURE", 0.1))
+# guidance_scale: strength of voice clone conditioning. 2.0 = default, 3.0–4.0 = stronger clone.
+_default_guidance_scale: float = float(os.environ.get("OMNIVOICE_GUIDANCE_SCALE", 3.0))
 # Single-threaded executor — all model.generate() calls are routed through this
 # so that torch.compile(mode="reduce-overhead") CUDA graph TLS state is always
 # accessed from the same thread. Created in main() before warmup.
@@ -227,6 +230,8 @@ def _iter_stream_pcm(
     num_step: int,
     postprocess_output: bool,
     denoise: bool,
+    class_temperature: float,
+    guidance_scale: float,
 ):
     """Yield raw signed-16-bit PCM bytes for each sentence chunk.
 
@@ -252,6 +257,8 @@ def _iter_stream_pcm(
                 num_step=num_step,
                 postprocess_output=postprocess_output,
                 denoise=denoise,
+                class_temperature=class_temperature,
+                guidance_scale=guidance_scale,
             )
             waveform = audios[0]  # float32 (T,)
             pcm = (np.clip(waveform, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
@@ -292,6 +299,8 @@ def synthesize():
     num_step = int(data.get("num_step", _default_num_step))
     postprocess_output = bool(data.get("postprocess_output", True))
     denoise = bool(data.get("denoise", True))
+    class_temperature = float(data.get("class_temperature", _default_class_temperature))
+    guidance_scale = float(data.get("guidance_scale", _default_guidance_scale))
     # OpenAI TTS response_format: mp3 | opus | aac | flac | wav | pcm
     response_format = data.get("response_format", "mp3").lower()
     stream = bool(data.get("stream", True))
@@ -301,7 +310,8 @@ def synthesize():
     # sentence. TTFB drops from full-generation time to first-sentence time.
     if stream:
         logging.info(
-            f"[stream] voice={voice_name} | text_len={len(text)} | num_step={num_step}"
+            f"[stream] voice={voice_name} | text_len={len(text)} | num_step={num_step} | "
+            f"class_temp={class_temperature} | guidance={guidance_scale}"
         )
         gen = stream_with_context(
             _iter_stream_pcm(
@@ -312,6 +322,8 @@ def synthesize():
                 num_step=num_step,
                 postprocess_output=postprocess_output,
                 denoise=denoise,
+                class_temperature=class_temperature,
+                guidance_scale=guidance_scale,
             )
         )
         return Response(
@@ -335,6 +347,8 @@ def synthesize():
             num_step=num_step,
             postprocess_output=postprocess_output,
             denoise=denoise,
+            class_temperature=class_temperature,
+            guidance_scale=guidance_scale,
         )
         elapsed = time.perf_counter() - t0
     except Exception as e:
@@ -433,6 +447,26 @@ def build_parser():
             "Defaults to OMNIVOICE_NUM_STEP env var or 16."
         ),
     )
+    parser.add_argument(
+        "--class-temperature",
+        type=float,
+        default=None,
+        help=(
+            "Token sampling temperature. 0.0 = greedy (flat/robotic), "
+            "0.1–0.3 = natural-sounding stochastic sampling. "
+            "Defaults to OMNIVOICE_CLASS_TEMPERATURE env var or 0.1."
+        ),
+    )
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=None,
+        help=(
+            "Classifier-free guidance scale for voice clone strength. "
+            "2.0 = default, 3.0–4.0 = stronger voice adherence. "
+            "Defaults to OMNIVOICE_GUIDANCE_SCALE env var or 3.0."
+        ),
+    )
     return parser
 
 
@@ -443,10 +477,18 @@ def main():
     )
     args = build_parser().parse_args()
 
-    global _default_num_step
+    global _default_num_step, _default_class_temperature, _default_guidance_scale
     if args.num_step is not None:
         _default_num_step = args.num_step
-    logging.info(f"Default num_step: {_default_num_step}")
+    if args.class_temperature is not None:
+        _default_class_temperature = args.class_temperature
+    if args.guidance_scale is not None:
+        _default_guidance_scale = args.guidance_scale
+    logging.info(
+        f"Defaults — num_step: {_default_num_step} | "
+        f"class_temperature: {_default_class_temperature} | "
+        f"guidance_scale: {_default_guidance_scale}"
+    )
 
     if not args.compile:
         logging.info("torch.compile not enabled — running in eager mode.")
