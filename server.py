@@ -408,7 +408,7 @@ def build_parser():
         "--flash-attn",
         action="store_true",
         default=False,
-        help="Use Flash Attention 2 (requires flash-attn package, CUDA only).",
+        help="Use PyTorch SDPA with flash-attention kernels (CUDA Ampere+ only). No extra packages needed.",
     )
     parser.add_argument(
         "--int8",
@@ -460,10 +460,11 @@ def main():
         load_asr=not args.no_asr,
     )
     if args.flash_attn:
-        logging.warning(
-            "--flash-attn is incompatible with OmniVoice's custom 4D attention mask "
-            "and will cause a CUDA device-side assert. Ignoring --flash-attn."
-        )
+        # flash_attention_2 requires a 2D padding mask but OmniVoice passes a custom
+        # 4D boolean mask, causing a device-side assert. SDPA achieves the same
+        # flash-attention speedup via PyTorch's built-in kernels and supports 4D masks.
+        load_kwargs["attn_implementation"] = "sdpa"
+        logging.info("Flash Attention enabled via PyTorch SDPA (supports OmniVoice 4D mask).")
 
     logging.info(f"Loading OmniVoice from '{args.model}' on {device} ...")
     model = OmniVoice.from_pretrained(args.model, **load_kwargs)
